@@ -1,4 +1,15 @@
-static FUNCTIONS: &'static [fn(&Context, &mut String)] = &[
+use std::{
+    io::Read,
+    iter::Enumerate,
+    slice::Iter,
+};
+
+const NEWLINE: u8 = 10;
+const CARRIAGE: u8 = 13;
+const SPACE: u8 = 32;
+const TILDE: u8 = 126;
+
+const FUNCTIONS: &'static [fn(&mut ParserState, &Vec<u8>, usize)] = &[
     unhandled,            // 0    �	Control character: Null
     unhandled,            // 1    Control character: Start Of Heading
     unhandled,            // 2    Control character: Start Of Text
@@ -9,10 +20,10 @@ static FUNCTIONS: &'static [fn(&Context, &mut String)] = &[
     unhandled,            // 7    Control character: Bell
     unhandled,            // 8    Control character: Backspace
     unhandled,            // 9    Control character: Character Tabulation
-    unhandled,            // 10   Control character: Line Feed (lf)
+    line_feed,            // 10   Control character: Line Feed (lf)
     unhandled,            // 11   Control character: Line Tabulation
     unhandled,            // 12   Control character: Form Feed (ff)
-    unhandled,            // 13   Control character: Carriage Return (cr)
+    carriage_return,      // 13   Control character: Carriage Return (cr)
     unhandled,            // 14   Control character: Shift Out
     unhandled,            // 15   Control character: Shift In
     unhandled,            // 16   Control character: Data Link Escape
@@ -128,920 +139,955 @@ static FUNCTIONS: &'static [fn(&Context, &mut String)] = &[
     tilde,                // 126  ~	Tilde
 ];
 
+struct ParserState<'a> {
+    context: Context,
+    ast: Node,
+    buffer: String,
+    current_node: Node,
+    contents_iter: &'a mut Enumerate<Iter<'a, u8>>,
+    start_of_line: bool,
+}
+
 enum Context {
-    Root
+    Root,
+    Digit,
 }
 
 enum Node {
     Root { children: Vec<Node> },
     Unknown,
+    Integer { token: String },
 }
 
 fn main() {
     let file_path = std::env::args().nth(1).unwrap();
-    // let source_code = std::fs::read_to_string(file_path).unwrap();
-    let result = parse(file_path);
+    let result = parse_file(file_path);
 
     println!("{:?}", result);
 }
 
-fn parse(file_path: String) -> String {
-    let file = std::fs::File::open(file_path).expect("able to open file");
-    let reader = std::io::BufReader::new(file);
-    let mut lines = bytelines::ByteLines::new(reader);
+fn parse_file(file_path: String) -> Option<u8> {
+    let mut file = std::fs::File::open(file_path).expect("able to open file");
+    let mut file_contents = Vec::new();
 
-    let mut context = Context::Root {};
-    let mut ast = Node::Root { children: vec![] };
-
-    let mut buffer = "".to_string();
-
-    while let Some(line) = lines.next() {
-        let mut start_of_line = true;
-
-        for byte_as_index in line.unwrap() {
-            // Ignore leading whitespace
-            if start_of_line && *byte_as_index == 32 as u8 {
-                continue;
-            } else {
-                start_of_line = false;
-            }
-
-            match byte_as_index {
-                32..=126 => {
-                    let func = FUNCTIONS[*byte_as_index as usize];
-                    func(&context, &mut buffer);
-                },
-                _ => {
-                    unhandled(&context, &mut buffer)
-                },
-            }
-
-            println!("{:#?}", buffer);
-        }
-
-        buffer.push_str("\n");
+    if let Err(error) = file.read_to_end(&mut file_contents) {
+        panic!("Unable to read file {:#?}", error);
     }
 
-    "Nice!".to_string()
+    let mut contents_iter = file_contents.iter().enumerate();
+    let mut parser_state = ParserState {
+        context: Context::Root {},
+        ast: Node::Root { children: vec![] },
+        buffer: "".to_string(),
+        current_node: Node::Unknown {},
+        contents_iter: &mut contents_iter,
+        start_of_line: true,
+    };
+
+    parse_contents(&mut parser_state, &file_contents);
+
+    Some(0)
 }
 
-fn unhandled(_context: &Context, _buffer: &mut String) {
+fn parse_contents(parser_state: &mut ParserState, file_contents: &Vec<u8>) {
+    while let Some((pos, byte)) = parser_state.contents_iter.next() {
+        if *byte != SPACE {
+            parser_state.start_of_line = false;
+        }
+
+        match byte {
+            &NEWLINE => line_feed(parser_state, file_contents, pos),
+            &CARRIAGE => carriage_return(parser_state, file_contents, pos),
+            SPACE..=TILDE => {
+                let func = FUNCTIONS[*byte as usize];
+                func(parser_state, file_contents, pos);
+            }
+            _ => unhandled(parser_state, file_contents, pos),
+        }
+
+        println!("{:#?}", parser_state.buffer);
+    }
+}
+
+fn unhandled(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     println!("Unhandled");
 }
 
-fn space(context: &Context, buffer: &mut String) {
-    match context {
-        // Context::Root => {
+fn line_feed(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    parser_state.start_of_line = true;
+    parser_state.buffer.push_str("\n");
+}
 
-        // },
-        _ => {
-            buffer.push_str(" ");
-        },
+fn carriage_return(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    parser_state.start_of_line = true;
+    parser_state.buffer.push_str("\n");
+
+    // Treat \r\n as a single newline character
+    if let Some(next_byte) = file_contents.get(pos + 1) {
+        if *next_byte == CARRIAGE {
+            parser_state.contents_iter.next();
+        }
     }
 }
 
-fn exclamation_mark(context: &Context, buffer: &mut String) {
-    match context {
-        Context::Root => {
-            buffer.push_str("!");
-        },
-        _ => {},
+fn space(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    if !parser_state.start_of_line {
+        parser_state.buffer.push_str(" ");
     }
 }
 
-fn quotation_mark(context: &Context, buffer: &mut String) {
-    match context {
+fn exclamation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("\"");
-        },
-        _ => {},
+            parser_state.buffer.push_str("!");
+        }
+        _ => {}
     }
 }
 
-fn number_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn quotation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("#");
-        },
-        _ => {},
+            parser_state.buffer.push_str("\"");
+        }
+        _ => {}
     }
 }
 
-fn dollar_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn number_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("$");
-        },
-        _ => {},
+            parser_state.buffer.push_str("#");
+        }
+        _ => {}
     }
 }
 
-fn percent_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn dollar_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("%");
-        },
-        _ => {},
+            parser_state.buffer.push_str("$");
+        }
+        _ => {}
     }
 }
 
-fn ampersand(context: &Context, buffer: &mut String) {
-    match context {
+fn percent_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("&");
-        },
-        _ => {},
+            parser_state.buffer.push_str("%");
+        }
+        _ => {}
     }
 }
 
-fn apostrophe(context: &Context, buffer: &mut String) {
-    match context {
+fn ampersand(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("'");
-        },
-        _ => {},
+            parser_state.buffer.push_str("&");
+        }
+        _ => {}
     }
 }
 
-fn left_parenthesis(context: &Context, buffer: &mut String) {
-    match context {
+fn apostrophe(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("(");
-        },
-        _ => {},
+            parser_state.buffer.push_str("'");
+        }
+        _ => {}
     }
 }
 
-fn right_parenthesis(context: &Context, buffer: &mut String) {
-    match context {
+fn left_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(")");
-        },
-        _ => {},
+            parser_state.buffer.push_str("(");
+        }
+        _ => {}
     }
 }
 
-fn asterisk(context: &Context, buffer: &mut String) {
-    match context {
+fn right_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("*");
-        },
-        _ => {},
+            parser_state.buffer.push_str(")");
+        }
+        _ => {}
     }
 }
 
-fn plus_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn asterisk(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("+");
-        },
-        _ => {},
+            parser_state.buffer.push_str("*");
+        }
+        _ => {}
     }
 }
 
-fn comma(context: &Context, buffer: &mut String) {
-    match context {
+fn plus_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(",");
-        },
-        _ => {},
+            parser_state.buffer.push_str("+");
+        }
+        _ => {}
     }
 }
 
-fn hyphen_minus(context: &Context, buffer: &mut String) {
-    match context {
+fn comma(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("-");
-        },
-        _ => {},
+            parser_state.buffer.push_str(",");
+        }
+        _ => {}
     }
 }
 
-fn full_stop(context: &Context, buffer: &mut String) {
-    match context {
+fn hyphen_minus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(".");
-        },
-        _ => {},
+            parser_state.buffer.push_str("-");
+        }
+        _ => {}
     }
 }
 
-fn solidus(context: &Context, buffer: &mut String) {
-    match context {
+fn full_stop(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("/");
-        },
-        _ => {},
+            parser_state.buffer.push_str(".");
+        }
+        _ => {}
     }
 }
 
-fn digit_zero(context: &Context, buffer: &mut String) {
-    match context {
+fn solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("0");
-        },
-        _ => {},
+            parser_state.buffer.push_str("/");
+        }
+        _ => {}
     }
 }
 
-fn digit_one(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_zero(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
+        Context::Digit => {
+            parser_state.buffer.push_str("0");
+        }
         Context::Root => {
-            buffer.push_str("1");
-        },
-        _ => {},
+            panic!("Leading zero");
+        }
+        _ => {}
+    }
+}
+
+fn digit_one(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    parser_state.buffer.push_str("1");
+
+    match &mut parser_state.current_node {
+        Node::Root { children } => {
+            parser_state.current_node = Node::Integer {
+                token: "1".to_string(),
+            };
+        }
+        Node::Integer { token } => {
+            token.push_str("1");
+        }
+        _ => {}
     }
 }
 
-fn digit_two(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_two(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("2");
-        },
-        _ => {},
+            parser_state.buffer.push_str("2");
+        }
+        _ => {}
     }
 }
 
-fn digit_three(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_three(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("3");
-        },
-        _ => {},
+            parser_state.buffer.push_str("3");
+        }
+        _ => {}
     }
 }
 
-fn digit_four(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_four(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("4");
-        },
-        _ => {},
+            parser_state.buffer.push_str("4");
+        }
+        _ => {}
     }
 }
 
-fn digit_five(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_five(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("5");
-        },
-        _ => {},
+            parser_state.buffer.push_str("5");
+        }
+        _ => {}
     }
 }
 
-fn digit_six(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_six(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("6");
-        },
-        _ => {},
+            parser_state.buffer.push_str("6");
+        }
+        _ => {}
     }
 }
 
-fn digit_seven(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_seven(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("7");
-        },
-        _ => {},
+            parser_state.buffer.push_str("7");
+        }
+        _ => {}
     }
 }
 
-fn digit_eight(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_eight(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("8");
-        },
-        _ => {},
+            parser_state.buffer.push_str("8");
+        }
+        _ => {}
     }
 }
 
-fn digit_nine(context: &Context, buffer: &mut String) {
-    match context {
+fn digit_nine(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("9");
-        },
-        _ => {},
+            parser_state.buffer.push_str("9");
+        }
+        _ => {}
     }
 }
 
-fn colon(context: &Context, buffer: &mut String) {
-    match context {
+fn colon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(":");
-        },
-        _ => {},
+            parser_state.buffer.push_str(":");
+        }
+        _ => {}
     }
 }
 
-fn semicolon(context: &Context, buffer: &mut String) {
-    match context {
+fn semicolon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(";");
-        },
-        _ => {},
+            parser_state.buffer.push_str(";");
+        }
+        _ => {}
     }
 }
 
-fn less_than_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn less_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("<");
-        },
-        _ => {},
+            parser_state.buffer.push_str("<");
+        }
+        _ => {}
     }
 }
 
-fn equals_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn equals_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("=");
-        },
-        _ => {},
+            parser_state.buffer.push_str("=");
+        }
+        _ => {}
     }
 }
 
-fn greater_than_sign(context: &Context, buffer: &mut String) {
-    match context {
+fn greater_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str(">");
-        },
-        _ => {},
+            parser_state.buffer.push_str(">");
+        }
+        _ => {}
     }
 }
 
-fn question_mark(context: &Context, buffer: &mut String) {
-    match context {
+fn question_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("?");
-        },
-        _ => {},
+            parser_state.buffer.push_str("?");
+        }
+        _ => {}
     }
 }
 
-fn commercial_at(context: &Context, buffer: &mut String) {
-    match context {
+fn commercial_at(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("@");
-        },
-        _ => {},
+            parser_state.buffer.push_str("@");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_a(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("A");
-        },
-        _ => {},
+            parser_state.buffer.push_str("A");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_b(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("B");
-        },
-        _ => {},
+            parser_state.buffer.push_str("B");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_c(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("C");
-        },
-        _ => {},
+            parser_state.buffer.push_str("C");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_d(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("D");
-        },
-        _ => {},
+            parser_state.buffer.push_str("D");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_e(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("E");
-        },
-        _ => {},
+            parser_state.buffer.push_str("E");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_f(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("F");
-        },
-        _ => {},
+            parser_state.buffer.push_str("F");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_g(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("G");
-        },
-        _ => {},
+            parser_state.buffer.push_str("G");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_h(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("H");
-        },
-        _ => {},
+            parser_state.buffer.push_str("H");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_i(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("I");
-        },
-        _ => {},
+            parser_state.buffer.push_str("I");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_j(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("J");
-        },
-        _ => {},
+            parser_state.buffer.push_str("J");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_k(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("K");
-        },
-        _ => {},
+            parser_state.buffer.push_str("K");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_l(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("L");
-        },
-        _ => {},
+            parser_state.buffer.push_str("L");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_m(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("M");
-        },
-        _ => {},
+            parser_state.buffer.push_str("M");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_n(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("N");
-        },
-        _ => {},
+            parser_state.buffer.push_str("N");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_o(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("O");
-        },
-        _ => {},
+            parser_state.buffer.push_str("O");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_p(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("P");
-        },
-        _ => {},
+            parser_state.buffer.push_str("P");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_q(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("Q");
-        },
-        _ => {},
+            parser_state.buffer.push_str("Q");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_r(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("R");
-        },
-        _ => {},
+            parser_state.buffer.push_str("R");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_s(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("S");
-        },
-        _ => {},
+            parser_state.buffer.push_str("S");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_t(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("T");
-        },
-        _ => {},
+            parser_state.buffer.push_str("T");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_u(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("U");
-        },
-        _ => {},
+            parser_state.buffer.push_str("U");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_v(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("V");
-        },
-        _ => {},
+            parser_state.buffer.push_str("V");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_w(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("W");
-        },
-        _ => {},
+            parser_state.buffer.push_str("W");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_x(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("X");
-        },
-        _ => {},
+            parser_state.buffer.push_str("X");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_y(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("Y");
-        },
-        _ => {},
+            parser_state.buffer.push_str("Y");
+        }
+        _ => {}
     }
 }
 
-fn letter_cap_z(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_cap_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("Z");
-        },
-        _ => {},
+            parser_state.buffer.push_str("Z");
+        }
+        _ => {}
     }
 }
 
-fn left_square_bracket(context: &Context, buffer: &mut String) {
-    match context {
+fn left_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("[");
-        },
-        _ => {},
+            parser_state.buffer.push_str("[");
+        }
+        _ => {}
     }
 }
 
-fn reverse_solidus(context: &Context, buffer: &mut String) {
-    match context {
+fn reverse_solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("\\");
-        },
-        _ => {},
+            parser_state.buffer.push_str("\\");
+        }
+        _ => {}
     }
 }
 
-fn right_square_bracket(context: &Context, buffer: &mut String) {
-    match context {
+fn right_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("]");
-        },
-        _ => {},
+            parser_state.buffer.push_str("]");
+        }
+        _ => {}
     }
 }
 
-fn circumflex_accent(context: &Context, buffer: &mut String) {
-    match context {
+fn circumflex_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("^");
-        },
-        _ => {},
+            parser_state.buffer.push_str("^");
+        }
+        _ => {}
     }
 }
 
-fn low_line(context: &Context, buffer: &mut String) {
-    match context {
+fn low_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("_");
-        },
-        _ => {},
+            parser_state.buffer.push_str("_");
+        }
+        _ => {}
     }
 }
 
-fn grave_accent(context: &Context, buffer: &mut String) {
-    match context {
+fn grave_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("`");
-        },
-        _ => {},
+            parser_state.buffer.push_str("`");
+        }
+        _ => {}
     }
 }
 
-fn letter_a(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("a");
-        },
-        _ => {},
+            parser_state.buffer.push_str("a");
+        }
+        _ => {}
     }
 }
 
-fn letter_b(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("b");
-        },
-        _ => {},
+            parser_state.buffer.push_str("b");
+        }
+        _ => {}
     }
 }
 
-fn letter_c(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("c");
-        },
-        _ => {},
+            parser_state.buffer.push_str("c");
+        }
+        _ => {}
     }
 }
 
-fn letter_d(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("d");
-        },
-        _ => {},
+            parser_state.buffer.push_str("d");
+        }
+        _ => {}
     }
 }
 
-fn letter_e(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("e");
-        },
-        _ => {},
+            parser_state.buffer.push_str("e");
+        }
+        _ => {}
     }
 }
 
-fn letter_f(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("f");
-        },
-        _ => {},
+            parser_state.buffer.push_str("f");
+        }
+        _ => {}
     }
 }
 
-fn letter_g(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("g");
-        },
-        _ => {},
+            parser_state.buffer.push_str("g");
+        }
+        _ => {}
     }
 }
 
-fn letter_h(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("h");
-        },
-        _ => {},
+            parser_state.buffer.push_str("h");
+        }
+        _ => {}
     }
 }
 
-fn letter_i(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("i");
-        },
-        _ => {},
+            parser_state.buffer.push_str("i");
+        }
+        _ => {}
     }
 }
 
-fn letter_j(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("j");
-        },
-        _ => {},
+            parser_state.buffer.push_str("j");
+        }
+        _ => {}
     }
 }
 
-fn letter_k(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("k");
-        },
-        _ => {},
+            parser_state.buffer.push_str("k");
+        }
+        _ => {}
     }
 }
 
-fn letter_l(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("l");
-        },
-        _ => {},
+            parser_state.buffer.push_str("l");
+        }
+        _ => {}
     }
 }
 
-fn letter_m(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("m");
-        },
-        _ => {},
+            parser_state.buffer.push_str("m");
+        }
+        _ => {}
     }
 }
 
-fn letter_n(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("n");
-        },
-        _ => {},
+            parser_state.buffer.push_str("n");
+        }
+        _ => {}
     }
 }
 
-fn letter_o(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("o");
-        },
-        _ => {},
+            parser_state.buffer.push_str("o");
+        }
+        _ => {}
     }
 }
 
-fn letter_p(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("p");
-        },
-        _ => {},
+            parser_state.buffer.push_str("p");
+        }
+        _ => {}
     }
 }
 
-fn letter_q(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("q");
-        },
-        _ => {},
+            parser_state.buffer.push_str("q");
+        }
+        _ => {}
     }
 }
 
-fn letter_r(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("r");
-        },
-        _ => {},
+            parser_state.buffer.push_str("r");
+        }
+        _ => {}
     }
 }
 
-fn letter_s(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("s");
-        },
-        _ => {},
+            parser_state.buffer.push_str("s");
+        }
+        _ => {}
     }
 }
 
-fn letter_t(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("t");
-        },
-        _ => {},
+            parser_state.buffer.push_str("t");
+        }
+        _ => {}
     }
 }
 
-fn letter_u(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("u");
-        },
-        _ => {},
+            parser_state.buffer.push_str("u");
+        }
+        _ => {}
     }
 }
 
-fn letter_v(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("v");
-        },
-        _ => {},
+            parser_state.buffer.push_str("v");
+        }
+        _ => {}
     }
 }
 
-fn letter_w(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("w");
-        },
-        _ => {},
+            parser_state.buffer.push_str("w");
+        }
+        _ => {}
     }
 }
 
-fn letter_x(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("x");
-        },
-        _ => {},
+            parser_state.buffer.push_str("x");
+        }
+        _ => {}
     }
 }
 
-fn letter_y(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("y");
-        },
-        _ => {},
+            parser_state.buffer.push_str("y");
+        }
+        _ => {}
     }
 }
 
-fn letter_z(context: &Context, buffer: &mut String) {
-    match context {
+fn letter_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("z");
-        },
-        _ => {},
+            parser_state.buffer.push_str("z");
+        }
+        _ => {}
     }
 }
 
-fn left_curly_bracket(context: &Context, buffer: &mut String) {
-    match context {
+fn left_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("{");
-        },
-        _ => {},
+            parser_state.buffer.push_str("{");
+        }
+        _ => {}
     }
 }
 
-fn vertical_line(context: &Context, buffer: &mut String) {
-    match context {
+fn vertical_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("|");
-        },
-        _ => {},
+            parser_state.buffer.push_str("|");
+        }
+        _ => {}
     }
 }
 
-fn right_curly_bracket(context: &Context, buffer: &mut String) {
-    match context {
+fn right_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("}");
-        },
-        _ => {},
+            parser_state.buffer.push_str("}");
+        }
+        _ => {}
     }
 }
 
-fn tilde(context: &Context, buffer: &mut String) {
-    match context {
+fn tilde(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
+    match parser_state.context {
         Context::Root => {
-            buffer.push_str("~");
-        },
-        _ => {},
+            parser_state.buffer.push_str("~");
+        }
+        _ => {}
     }
 }
