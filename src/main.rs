@@ -1,8 +1,13 @@
+mod nodes;
+use nodes::*;
+
 use std::{
     io::Read,
     iter::Enumerate,
     slice::Iter,
 };
+
+use chumsky::text::{Character, newline};
 
 const NEWLINE: u8 = 10;
 const CARRIAGE: u8 = 13;
@@ -139,68 +144,23 @@ const FUNCTIONS: &'static [fn(&mut ParserState, &Vec<u8>, usize)] = &[
     tilde,                // 126  ~	Tilde
 ];
 
+#[derive(Debug)]
 struct ParserState<'a> {
     context: Context,
-    ast: Node,
+    ast: Root<'a>,
     buffer: String,
     prev_pos: u64,
-    current_node: Node,
+    current_node: Node<'a>,
     contents_iter: &'a mut Enumerate<Iter<'a, u8>>,
     start_of_line: bool,
 }
 
+#[derive(Debug)]
 enum Context {
     Root,
     Digit,
-}
-
-// #[derive(Debug)]
-enum Node {
-    Root { children: Vec<Node> },
-    Unknown { source_code: String },
-
-    Integer { token: String },
-    Var { token: String },
-
-    Add { left: Box<Node>, right: Box<Node> },
-    Subtract { left: Box<Node>, right: Box<Node> },
-    Mult { left: Box<Node>, right: Box<Node> },
-    Div { left: Box<Node>, right: Box<Node> },
-    Negate { arg: Box<Node> },
-}
-
-impl Node {
-    pub fn eval(&self) -> i64 {
-        match self {
-            Node::Root { children } => { children.iter().map(|child| child.eval()).sum() },
-            Node::Unknown { source_code }  => { source_code; 0 },
-
-            Node::Integer { token } => { token.parse::<i64>().unwrap() },
-            Node::Var { token } => { token; 0 },
-
-            Node::Add { left, right } => { left.eval() + right.eval() },
-            Node::Subtract { left, right } => { left.eval() - right.eval() },
-            Node::Mult { left, right } => { left.eval() * right.eval() },
-            Node::Div { left, right } => { left.eval() / right.eval() },
-            Node::Negate { arg } => { -(arg.eval()) },
-        }
-    }
-
-    pub fn print(&self) {
-        match self {
-            Node::Root { children } => { children.iter().for_each(|child| child.print()); },
-            Node::Unknown { source_code }  => { println!("{:#?}", source_code); },
-
-            Node::Integer { token } => { println!("{:#?}", token); },
-            Node::Var { token } => { println!("{:#?}", token); },
-
-            Node::Add { left, right } => { println!("({:#?} * {:#?})", left.print(), right.print()); },
-            Node::Subtract { left, right } => { println!("({:#?} * {:#?})", left.print(), right.print()); },
-            Node::Mult { left, right } => { println!("({:#?} * {:#?})", left.print(), right.print()); },
-            Node::Div { left, right } => { println!("({:#?} * {:#?})", left.print(), right.print()); },
-            Node::Negate { arg } => { println!("{:#?}", arg.print()); },
-        }
-    }
+    Whitespace,
+    BinaryOp,
 }
 
 fn main() {
@@ -220,11 +180,12 @@ fn parse_file(file_path: String) -> Option<u8> {
 
     let mut contents_iter = file_contents.iter().enumerate();
     let mut parser_state = ParserState {
+        ast: Root { children: vec![] },
+        current_node: Node::Unknown(Unknown { source_code: "".to_string() }),
+
         context: Context::Root {},
-        ast: Node::Root { children: vec![] },
         buffer: "".to_string(),
         prev_pos: 0,
-        current_node: Node::Unknown { source_code: "".to_string() },
         contents_iter: &mut contents_iter,
         start_of_line: true,
     };
@@ -240,6 +201,8 @@ fn parse_contents(parser_state: &mut ParserState, file_contents: &Vec<u8>) {
             parser_state.start_of_line = false;
         }
 
+        println!("char: {:#?}", byte.to_char());
+
         match byte {
             &NEWLINE => line_feed(parser_state, file_contents, pos),
             &CARRIAGE => carriage_return(parser_state, file_contents, pos),
@@ -250,7 +213,7 @@ fn parse_contents(parser_state: &mut ParserState, file_contents: &Vec<u8>) {
             _ => unhandled(parser_state, file_contents, pos),
         }
 
-        println!("{:#?}", parser_state.current_node.print());
+        println!("{:#?}", parser_state.current_node);
     }
 }
 
@@ -279,17 +242,25 @@ fn carriage_return(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos:
 }
 
 fn space(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
-    if !parser_state.start_of_line {
-        parser_state.buffer.push_str(" ");
+    // if !parser_state.start_of_line {
+    //     parser_state.buffer.push_str(" ");
+    // }
+
+    match &mut parser_state.current_node {
+        Node::Unknown(Unknown{ source_code: _ }) => { }
+        Node::Integer(Integer{ token: _ }) => {
+            parser_state.context = Context::Whitespace;
+        }
+        _ => {}
     }
 }
 
 fn exclamation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "!".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -297,10 +268,10 @@ fn exclamation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos
 
 fn quotation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "\"".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -308,10 +279,10 @@ fn quotation_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: 
 
 fn number_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "#".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -319,10 +290,10 @@ fn number_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn dollar_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "$".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -330,10 +301,10 @@ fn dollar_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn percent_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "%".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -341,10 +312,10 @@ fn percent_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn ampersand(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "&".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -352,10 +323,10 @@ fn ampersand(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn apostrophe(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "'".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -363,10 +334,10 @@ fn apostrophe(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usiz
 
 fn left_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "(".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -374,10 +345,10 @@ fn left_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos
 
 fn right_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ")".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -385,10 +356,10 @@ fn right_parenthesis(parser_state: &mut ParserState, file_contents: &Vec<u8>, po
 
 fn asterisk(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "*".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -396,10 +367,23 @@ fn asterisk(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn plus_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
-                token: "+".to_string(),
-            };
+        Node::Unknown(Unknown { source_code: _ }) => { panic!("Leading plus sign isn't good") }
+        Node::Integer(Integer { token: _ }) => {
+            match &mut parser_state.context {
+                Context::Whitespace => { panic!("Whitespace in an integer") }
+                Context::Digit => {
+                    parser_state.context = Context::BinaryOp;
+
+                    // todo
+
+                    // parser_state.current_node = Node::Add(Add {
+                    //     left: &parser_state.current_node,
+                    //     right: &Node::Unknown(Unknown { source_code: "".to_string() }),
+                    // })
+
+                }
+                _ => {}
+            }
         }
         _ => {}
     }
@@ -407,10 +391,10 @@ fn plus_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn comma(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ",".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -418,10 +402,10 @@ fn comma(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
 
 fn hyphen_minus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "-".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -429,10 +413,10 @@ fn hyphen_minus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn full_stop(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ".".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -440,10 +424,10 @@ fn full_stop(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "/".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -451,27 +435,69 @@ fn solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) 
 
 fn digit_zero(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
+        Node::Unknown(Unknown { source_code: _ }) => {
             panic!("Leading zero");
-        },
-        Node::Integer { token } => {
-            token.push_str("0");
+        }
+        Node::Add(Add { left, right }) => {
+            panic!("Leading zero");
+        }
+        Node::Integer(Integer { token }) => {
+            match &mut parser_state.context {
+                Context::Whitespace => { panic!("Whitespace in an integer") }
+                Context::Digit => { token.push_str("0") }
+                _ => {}
+            }
         }
         _ => {}
     }
 }
 
 fn digit_one(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
-    parser_state.buffer.push_str("1");
-
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Unknown(Unknown { source_code: _ }) => {
+            parser_state.context = Context::Digit;
+            parser_state.current_node = Node::Integer(Integer {
                 token: "1".to_string(),
-            };
-        },
-        Node::Integer { token } => {
-            token.push_str("1");
+            });
+        }
+        Node::Add(Add { left, right }) => {
+            // parser_state.current_node
+
+            // if let nodes::Add(a_node) = parser_state.current_node {
+            //     // right = &mut Box::new(nodes::Integer {
+            //     //     token: "1".to_string(),
+            //     // });
+            // }
+
+            // match parser_state.current_node {
+            //     nodes::Unknown { source_code: _ } => {
+            //         if let nodes::Unknown { source_code: _ } = &mut parser_state.current_node {
+            //         }
+
+            //         // parser_state.context = Context::Digit;
+            //         //  = nodes::Integer {
+            //         //     token: "1".to_string(),
+            //         // };
+            //     }
+            //     // nodes::Add { left, right } => {
+
+            //     // }
+            //     // nodes::Integer { token } => {
+            //     //     match &mut parser_state.context {
+            //     //         Context::Whitespace => { panic!("Whitespace in an integer") }
+            //     //         Context::Digit => { token.push_str("1") }
+            //     //         _ => {}
+            //     //     }
+            //     // }
+            //     _ => {}
+            // }
+        }
+        Node::Integer(Integer { token }) => {
+            match &mut parser_state.context {
+                Context::Whitespace => { panic!("Whitespace in an integer") }
+                Context::Digit => { token.push_str("1") }
+                _ => {}
+            }
         }
         _ => {}
     }
@@ -479,10 +505,10 @@ fn digit_one(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn digit_two(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "2".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -490,10 +516,10 @@ fn digit_two(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn digit_three(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "3".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -501,10 +527,10 @@ fn digit_three(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn digit_four(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "4".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -512,10 +538,10 @@ fn digit_four(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usiz
 
 fn digit_five(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "5".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -523,10 +549,10 @@ fn digit_five(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usiz
 
 fn digit_six(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "6".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -534,10 +560,10 @@ fn digit_six(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn digit_seven(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "7".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -545,10 +571,10 @@ fn digit_seven(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn digit_eight(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "8".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -556,10 +582,10 @@ fn digit_eight(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn digit_nine(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "9".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -567,10 +593,10 @@ fn digit_nine(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usiz
 
 fn colon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ":".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -578,10 +604,10 @@ fn colon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
 
 fn semicolon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ";".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -589,10 +615,10 @@ fn semicolon(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize
 
 fn less_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "<".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -600,10 +626,10 @@ fn less_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: 
 
 fn equals_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "=".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -611,10 +637,10 @@ fn equals_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usi
 
 fn greater_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: ">".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -622,10 +648,10 @@ fn greater_than_sign(parser_state: &mut ParserState, file_contents: &Vec<u8>, po
 
 fn question_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "?".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -633,10 +659,10 @@ fn question_mark(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: u
 
 fn commercial_at(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "@".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -644,10 +670,10 @@ fn commercial_at(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: u
 
 fn letter_cap_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "A".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -655,10 +681,10 @@ fn letter_cap_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "B".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -666,10 +692,10 @@ fn letter_cap_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "C".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -677,10 +703,10 @@ fn letter_cap_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "D".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -688,10 +714,10 @@ fn letter_cap_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "E".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -699,10 +725,10 @@ fn letter_cap_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "F".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -710,10 +736,10 @@ fn letter_cap_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "G".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -721,10 +747,10 @@ fn letter_cap_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "H".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -732,10 +758,10 @@ fn letter_cap_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "I".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -743,10 +769,10 @@ fn letter_cap_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "J".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -754,10 +780,10 @@ fn letter_cap_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "K".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -765,10 +791,10 @@ fn letter_cap_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "L".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -776,10 +802,10 @@ fn letter_cap_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "M".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -787,10 +813,10 @@ fn letter_cap_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "N".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -798,10 +824,10 @@ fn letter_cap_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "O".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -809,10 +835,10 @@ fn letter_cap_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "P".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -820,10 +846,10 @@ fn letter_cap_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "Q".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -831,10 +857,10 @@ fn letter_cap_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "R".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -842,10 +868,10 @@ fn letter_cap_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "S".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -853,10 +879,10 @@ fn letter_cap_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "T".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -864,10 +890,10 @@ fn letter_cap_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "U".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -875,10 +901,10 @@ fn letter_cap_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "V".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -886,10 +912,10 @@ fn letter_cap_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "W".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -897,10 +923,10 @@ fn letter_cap_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "X".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -908,10 +934,10 @@ fn letter_cap_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "Y".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -919,10 +945,10 @@ fn letter_cap_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_cap_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "Z".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -930,10 +956,10 @@ fn letter_cap_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn left_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "[".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -941,10 +967,10 @@ fn left_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, 
 
 fn reverse_solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "\\".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -952,10 +978,10 @@ fn reverse_solidus(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos:
 
 fn right_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "]".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -963,10 +989,10 @@ fn right_square_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>,
 
 fn circumflex_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "^".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -974,10 +1000,10 @@ fn circumflex_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, po
 
 fn low_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "_".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -985,10 +1011,10 @@ fn low_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn grave_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "`".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -996,10 +1022,10 @@ fn grave_accent(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: us
 
 fn letter_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "a".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1007,10 +1033,10 @@ fn letter_a(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "b".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1018,10 +1044,10 @@ fn letter_b(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "c".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1029,10 +1055,10 @@ fn letter_c(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "d".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1040,10 +1066,10 @@ fn letter_d(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "e".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1051,10 +1077,10 @@ fn letter_e(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "f".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1062,10 +1088,10 @@ fn letter_f(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "g".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1073,10 +1099,10 @@ fn letter_g(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "h".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1084,10 +1110,10 @@ fn letter_h(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "i".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1095,10 +1121,10 @@ fn letter_i(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "j".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1106,10 +1132,10 @@ fn letter_j(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "k".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1117,10 +1143,10 @@ fn letter_k(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "l".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1128,10 +1154,10 @@ fn letter_l(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "m".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1139,10 +1165,10 @@ fn letter_m(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "n".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1150,10 +1176,10 @@ fn letter_n(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "o".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1161,10 +1187,10 @@ fn letter_o(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "p".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1172,10 +1198,10 @@ fn letter_p(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "q".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1183,10 +1209,10 @@ fn letter_q(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "r".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1194,10 +1220,10 @@ fn letter_r(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "s".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1205,10 +1231,10 @@ fn letter_s(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "t".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1216,10 +1242,10 @@ fn letter_t(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "u".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1227,10 +1253,10 @@ fn letter_u(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "v".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1238,10 +1264,10 @@ fn letter_v(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "w".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1249,10 +1275,10 @@ fn letter_w(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "x".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1260,10 +1286,10 @@ fn letter_x(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "y".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1271,10 +1297,10 @@ fn letter_y(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn letter_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "z".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1282,10 +1308,10 @@ fn letter_z(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize)
 
 fn left_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "{".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1293,10 +1319,10 @@ fn left_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, p
 
 fn vertical_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "|".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1304,10 +1330,10 @@ fn vertical_line(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: u
 
 fn right_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "}".to_string(),
-            };
+            });
         }
         _ => {}
     }
@@ -1315,10 +1341,10 @@ fn right_curly_bracket(parser_state: &mut ParserState, file_contents: &Vec<u8>, 
 
 fn tilde(parser_state: &mut ParserState, file_contents: &Vec<u8>, pos: usize) {
     match &mut parser_state.current_node {
-        Node::Root { children } => {
-            parser_state.current_node = Node::Integer {
+        Node::Root(Root{ children }) => {
+            parser_state.current_node = Node::Integer(Integer{
                 token: "~".to_string(),
-            };
+            });
         }
         _ => {}
     }

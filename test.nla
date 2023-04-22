@@ -1,7 +1,1 @@
-def add(x, y)
-  x + y
-end
-
-seven = 7;
-
-add(2, 3) * -seven
+10 + 10
